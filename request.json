@@ -1,0 +1,22 @@
+{
+  "name": "Shounendra",
+  "mail": "kshounendra@gmail.com",
+  "department": {
+    "department_name": "Computer Science",
+    "location": "Delhi"
+  },
+  "subjects": [
+    {
+      "subject_name": "English",
+      "marks_obtained": 80
+    },
+    {
+      "subject_name": "Matths",
+      "marks_obtained": 80
+    },
+    {
+      "subject_name": "Science",
+      "marks_obtained": 80
+    }
+  ]
+}
