@@ -1,0 +1,39 @@
+def number_to_text(number):
+    units = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+    teens = ["", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+    tens = ["", "ten", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
+    thousands = ["", "thousand", "million"]
+
+    def convert_hundreds(n):
+        result = ""
+        if n >= 100:
+            result += units[n // 100] + " hundred "
+            n %= 100
+        if n >= 20:
+            result += tens[n // 10] + " "
+            n %= 10
+        elif n >= 11:
+            result += teens[n - 10] + " "
+            n = 0
+        if n > 0:
+            result += units[n] + " "
+        return result.strip()
+
+    if number == 0:
+        return "zero"
+
+    result = ""
+    for i, chunk in enumerate(reversed(str(number))):
+        if i % 3 == 0:
+            current_chunk = int("".join(reversed(chunk)))
+            if current_chunk > 0:
+                result = convert_hundreds(current_chunk) + " " + thousands[i // 3] + " " + result
+        else:
+            result = chunk + result
+
+    return result.strip()
+
+# Example usage:
+number = 1000000
+text_representation = number_to_text(number)
+print(f"{number} in text is: {text_representation}")
