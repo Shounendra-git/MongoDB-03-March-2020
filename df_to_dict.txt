@@ -1,0 +1,21 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import collect_set
+
+# Initialize Spark session
+spark = SparkSession.builder.appName("ConvertToDictionary").getOrCreate()
+
+# Sample data
+data = [(1, ["Alice", "Bob"]),
+        (2, ["Charlie"]),
+        (3, ["Alice", "David", "Eve"])]
+
+columns = ["id", "name"]
+df = spark.createDataFrame(data, columns)
+
+# Convert name column to set and group by id
+result_df = df.groupBy("id").agg(collect_set("name").alias("name_set"))
+
+# Convert DataFrame to dictionary
+result_dict = {row['id']: set(row['name_set'][0]) for row in result_df.collect()}
+
+print(result_dict)
