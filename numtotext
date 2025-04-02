@@ -1,39 +1,42 @@
-def number_to_text(number):
-    units = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
-    teens = ["", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
-    tens = ["", "ten", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"]
-    thousands = ["", "thousand", "million"]
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, split, lower, trim, expr, explode, array_except, broadcast
 
-    def convert_hundreds(n):
-        result = ""
-        if n >= 100:
-            result += units[n // 100] + " hundred "
-            n %= 100
-        if n >= 20:
-            result += tens[n // 10] + " "
-            n %= 10
-        elif n >= 11:
-            result += teens[n - 10] + " "
-            n = 0
-        if n > 0:
-            result += units[n] + " "
-        return result.strip()
+# Initialize Spark session
+spark = SparkSession.builder \
+    .appName("OptimizedFuzzyMatching") \
+    .enableHiveSupport() \
+    .getOrCreate()
 
-    if number == 0:
-        return "zero"
+# Business suffix and stopwords
+BSNS_SUFFIX_TAG_LIST = ["limited", "liability", "incorporated", "corporation", "association",
+                        "solutions", "group", "partnership", "company", "pledge", "plc", "llp", "pvt", "co"]
+ENGLISH_STOP_WORDS = ["the", "and", "of", "in", "to", "for", "on", "at", "by", "with"]
 
-    result = ""
-    for i, chunk in enumerate(reversed(str(number))):
-        if i % 3 == 0:
-            current_chunk = int("".join(reversed(chunk)))
-            if current_chunk > 0:
-                result = convert_hundreds(current_chunk) + " " + thousands[i // 3] + " " + result
-        else:
-            result = chunk + result
+# Convert to broadcast sets for performance
+bsns_bcast = broadcast(spark.createDataFrame([(w,) for w in BSNS_SUFFIX_TAG_LIST], ["word"]))
+stopwords_bcast = broadcast(spark.createDataFrame([(w,) for w in ENGLISH_STOP_WORDS], ["word"]))
 
-    return result.strip()
+# Load data
+df = spark.read.parquet("path_to_your_dataset")
 
-# Example usage:
-number = 1000000
-text_representation = number_to_text(number)
-print(f"{number} in text is: {text_representation}")
+# Tokenization and preprocessing
+df_cleaned = df.withColumn("name_clean", lower(trim(col("name")))) \
+               .withColumn("name_clean", expr(r"regexp_replace(name_clean, '[^a-z0-9 ]', '')")) \
+               .withColumn("firstname", split(col("name_clean"), " ")[0]) \
+               .withColumn("token", col("firstname") + col("postal_code"))
+
+# Token Filtering (Remove business suffixes and stopwords)
+df_tokenized = df_cleaned.withColumn("key_list", split(col("name_clean"), " ")) \
+                         .withColumn("filtered_keys", array_except(col("key_list"), bsns_bcast["word"])) \
+                         .withColumn("filtered_keys", array_except(col("filtered_keys"), stopwords_bcast["word"])) \
+                         .withColumn("token", explode(col("filtered_keys")) + col("postal_code"))
+
+# Self-Join on token (keeping all columns)
+df_joined = df_tokenized.alias("a").join(
+    df_tokenized.alias("b"),
+    (col("a.token") == col("b.token")) & (col("a.id") != col("b.id")),
+    "inner"
+).select([col("a." + c) for c in df.columns] + [col("b.id").alias("match_id")])
+
+# Optimize writing: Use partitioning instead of bucketBy()
+df_joined.write.mode("overwrite").partitionBy("postal_code").parquet("path_to_output")
