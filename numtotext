@@ -1,7 +1,7 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, split, lower, trim, expr, explode, array_except, broadcast
 
-# Initialize Spark session
+# Initialize Spark session with Hive support
 spark = SparkSession.builder \
     .appName("OptimizedFuzzyMatching") \
     .enableHiveSupport() \
@@ -16,8 +16,8 @@ ENGLISH_STOP_WORDS = ["the", "and", "of", "in", "to", "for", "on", "at", "by", "
 bsns_bcast = broadcast(spark.createDataFrame([(w,) for w in BSNS_SUFFIX_TAG_LIST], ["word"]))
 stopwords_bcast = broadcast(spark.createDataFrame([(w,) for w in ENGLISH_STOP_WORDS], ["word"]))
 
-# Load data
-df = spark.read.parquet("path_to_your_dataset")
+# Load data from Hive
+df = spark.read.table("dpm_curated.eph.df_dummy_kevin")
 
 # Tokenization and preprocessing
 df_cleaned = df.withColumn("name_clean", lower(trim(col("name")))) \
@@ -31,12 +31,16 @@ df_tokenized = df_cleaned.withColumn("key_list", split(col("name_clean"), " ")) 
                          .withColumn("filtered_keys", array_except(col("filtered_keys"), stopwords_bcast["word"])) \
                          .withColumn("token", explode(col("filtered_keys")) + col("postal_code"))
 
+# Optimize join using partitioning strategy
+df_partitioned = df_tokenized.repartition("token")
+
 # Self-Join on token (keeping all columns)
-df_joined = df_tokenized.alias("a").join(
-    df_tokenized.alias("b"),
+df_joined = df_partitioned.alias("a").join(
+    df_partitioned.alias("b"),
     (col("a.token") == col("b.token")) & (col("a.id") != col("b.id")),
     "inner"
 ).select([col("a." + c) for c in df.columns] + [col("b.id").alias("match_id")])
 
-# Optimize writing: Use partitioning instead of bucketBy()
-df_joined.write.mode("overwrite").partitionBy("postal_code").parquet("path_to_output")
+# Write optimized output back to Hive
+df_joined.write.mode("overwrite").partitionBy("postal_code").format("parquet") \
+    .saveAsTable("dpm_curated.eph.df_final")
