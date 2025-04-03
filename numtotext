@@ -1,46 +1,40 @@
+
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, split, lower, trim, expr, explode, array_except, broadcast
+from pyspark.sql.functions import lower, trim, regexp_replace, concat_ws, col
 
-# Initialize Spark session with Hive support
-spark = SparkSession.builder \
-    .appName("OptimizedFuzzyMatching") \
-    .enableHiveSupport() \
-    .getOrCreate()
+# Initialize Spark session
+spark = SparkSession.builder.appName("TokenIDSelfJoin").getOrCreate()
 
-# Business suffix and stopwords
-BSNS_SUFFIX_TAG_LIST = ["limited", "liability", "incorporated", "corporation", "association",
-                        "solutions", "group", "partnership", "company", "pledge", "plc", "llp", "pvt", "co"]
-ENGLISH_STOP_WORDS = ["the", "and", "of", "in", "to", "for", "on", "at", "by", "with"]
+# Load the dataset (update path as needed)
+df = spark.read.option("header", True).csv("/mnt/data/Daata.csv")
 
-# Convert to broadcast sets for performance
-bsns_bcast = broadcast(spark.createDataFrame([(w,) for w in BSNS_SUFFIX_TAG_LIST], ["word"]))
-stopwords_bcast = broadcast(spark.createDataFrame([(w,) for w in ENGLISH_STOP_WORDS], ["word"]))
+# Tokenize name and postal_code
+df_tokens = df.withColumn("token_name", lower(trim(regexp_replace(col("name"), "[^a-zA-Z0-9]", "")))) \
+              .withColumn("token_postal", lower(trim(regexp_replace(col("postal_code"), "[^a-zA-Z0-9]", "")))) \
+              .withColumn("token_key", concat_ws("_", col("token_name"), col("token_postal"))) \
+              .select("id", "token_key")
 
-# Load data from Hive
-df = spark.read.table("dpm_curated.eph.df_dummy_kevin")
+# Join token back to original data
+df_with_token = df.join(df_tokens, on="id", how="inner")
 
-# Tokenization and preprocessing
-df_cleaned = df.withColumn("name_clean", lower(trim(col("name")))) \
-               .withColumn("name_clean", expr(r"regexp_replace(name_clean, '[^a-z0-9 ]', '')")) \
-               .withColumn("firstname", split(col("name_clean"), " ")[0]) \
-               .withColumn("token", col("firstname") + col("postal_code"))
+# Optional: Repartition by token_key to optimize join
+df_with_token = df_with_token.repartition(2000, "token_key")
 
-# Token Filtering (Remove business suffixes and stopwords)
-df_tokenized = df_cleaned.withColumn("key_list", split(col("name_clean"), " ")) \
-                         .withColumn("filtered_keys", array_except(col("key_list"), bsns_bcast["word"])) \
-                         .withColumn("filtered_keys", array_except(col("filtered_keys"), stopwords_bcast["word"])) \
-                         .withColumn("token", explode(col("filtered_keys")) + col("postal_code"))
-
-# Optimize join using partitioning strategy
-df_partitioned = df_tokenized.repartition("token")
-
-# Self-Join on token (keeping all columns)
-df_joined = df_partitioned.alias("a").join(
-    df_partitioned.alias("b"),
-    (col("a.token") == col("b.token")) & (col("a.id") != col("b.id")),
+# Self-join on token_key, excluding identical IDs
+df_result = df_with_token.alias("a").join(
+    df_with_token.alias("b"),
+    (col("a.token_key") == col("b.token_key")) & (col("a.id") != col("b.id")),
     "inner"
-).select([col("a." + c) for c in df.columns] + [col("b.id").alias("match_id")])
+).select(
+    col("a.id").alias("original_id"),
+    col("a.name").alias("original_name"),
+    col("a.postal_code").alias("original_postal_code"),
+    col("b.id").alias("matched_id"),
+    col("b.name").alias("matched_name"),
+    col("b.postal_code").alias("matched_postal_code"),
+    col("a.token_key")
+)
 
-# Write optimized output back to Hive
-df_joined.write.mode("overwrite").partitionBy("postal_code").format("parquet") \
-    .saveAsTable("dpm_curated.eph.df_final")
+# Show or save results
+df_result.show(100, truncate=False)
+# df_result.write.option("header", True).csv("/output/path/self_join_result")
