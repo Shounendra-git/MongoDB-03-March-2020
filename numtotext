@@ -1,40 +1,38 @@
-
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import lower, trim, regexp_replace, concat_ws, col
+from pyspark.sql.functions import col, explode, split, trim, lower, concat_ws, array, monotonically_increasing_id
 
-# Initialize Spark session
-spark = SparkSession.builder.appName("TokenIDSelfJoin").getOrCreate()
+spark = SparkSession.builder.getOrCreate()
 
-# Load the dataset (update path as needed)
+# Load CSV
 df = spark.read.option("header", True).csv("/mnt/data/Daata.csv")
 
-# Tokenize name and postal_code
-df_tokens = df.withColumn("token_name", lower(trim(regexp_replace(col("name"), "[^a-zA-Z0-9]", "")))) \
-              .withColumn("token_postal", lower(trim(regexp_replace(col("postal_code"), "[^a-zA-Z0-9]", "")))) \
-              .withColumn("token_key", concat_ws("_", col("token_name"), col("token_postal"))) \
-              .select("id", "token_key")
+# Add unique ID if not already present
+df = df.withColumn("uid", monotonically_increasing_id())
 
-# Join token back to original data
-df_with_token = df.join(df_tokens, on="id", how="inner")
+# Clean and tokenize name + postal_code
+df_tokenized = df.withColumn("name_clean", lower(trim(col("name")))) \
+    .withColumn("postal_clean", lower(trim(col("postal_code")))) \
+    .withColumn("name_tokens", split(col("name_clean"), "\\s+")) \
+    .withColumn("postal_tokens", split(col("postal_clean"), "\\s+")) \
+    .withColumn("tokens", array(*[col("name_tokens")[i] for i in range(2)] + [col("postal_tokens")[0]]))  # Simple merge of tokens
 
-# Optional: Repartition by token_key to optimize join
-df_with_token = df_with_token.repartition(2000, "token_key")
+# Explode tokens to get 1:N format
+exploded_df = df_tokenized.select("uid", "id", "name", "postal_code", explode("tokens").alias("token"))
 
-# Self-join on token_key, excluding identical IDs
-df_result = df_with_token.alias("a").join(
-    df_with_token.alias("b"),
-    (col("a.token_key") == col("b.token_key")) & (col("a.id") != col("b.id")),
-    "inner"
-).select(
-    col("a.id").alias("original_id"),
-    col("a.name").alias("original_name"),
-    col("a.postal_code").alias("original_postal_code"),
-    col("b.id").alias("matched_id"),
-    col("b.name").alias("matched_name"),
-    col("b.postal_code").alias("matched_postal_code"),
-    col("a.token_key")
+# Self-join on token
+joined = exploded_df.alias("left").join(
+    exploded_df.alias("right"),
+    (col("left.token") == col("right.token")) &
+    (col("left.uid") != col("right.uid"))
 )
 
-# Show or save results
-df_result.show(100, truncate=False)
-# df_result.write.option("header", True).csv("/output/path/self_join_result")
+# Optional: Add original data
+result = joined.select(
+    col("left.uid").alias("uid_l"), col("left.id").alias("id_l"),
+    col("left.name").alias("name_l"), col("left.postal_code").alias("postal_code_l"),
+    col("right.uid").alias("uid_r"), col("right.id").alias("id_r"),
+    col("right.name").alias("name_r"), col("right.postal_code").alias("postal_code_r"),
+    col("left.token")
+)
+
+result.show(truncate=False)
