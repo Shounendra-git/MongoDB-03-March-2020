@@ -1,38 +1,29 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, explode, split, trim, lower, concat_ws, array, monotonically_increasing_id
+import logging
+from datetime import datetime
 
-spark = SparkSession.builder.getOrCreate()
-
-# Load CSV
-df = spark.read.option("header", True).csv("/mnt/data/Daata.csv")
-
-# Add unique ID if not already present
-df = df.withColumn("uid", monotonically_increasing_id())
-
-# Clean and tokenize name + postal_code
-df_tokenized = df.withColumn("name_clean", lower(trim(col("name")))) \
-    .withColumn("postal_clean", lower(trim(col("postal_code")))) \
-    .withColumn("name_tokens", split(col("name_clean"), "\\s+")) \
-    .withColumn("postal_tokens", split(col("postal_clean"), "\\s+")) \
-    .withColumn("tokens", array(*[col("name_tokens")[i] for i in range(2)] + [col("postal_tokens")[0]]))  # Adjust tokens as needed
-
-# Explode tokens to get 1:N
-exploded_df = df_tokenized.select("*", explode("tokens").alias("token"))
-
-# Self-join on token but exclude same rows
-joined = exploded_df.alias("left").join(
-    exploded_df.alias("right"),
-    (col("left.token") == col("right.token")) &
-    (col("left.uid") != col("right.uid"))
+logging.basicConfig(
+    filename="log.txt",
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# Select all columns from both sides, prefixing with left_ and right_
-left_cols = ["left." + c for c in df.columns]
-right_cols = ["right." + c for c in df.columns]
+logging.info("Spark job started")
 
-# Include token in output
-final_cols = left_cols + right_cols + [col("left.token")]
+spark = SparkSession.builder \
+    .appName("tokenized_self_join") \
+    .enableHiveSupport() \
+    .getOrCreate()
 
-result = joined.selectExpr(*left_cols, *right_cols, "left.token as join_token")
+logging.info("Spark session created")
 
-result.show(truncate=False)
+# Load and process data...
+# df = spark.sql(...)
+# df_tokenized = ...
+
+logging.info("Tokenization complete")
+logging.info("Join process starting")
+
+# After join...
+logging.info("Join completed successfully")
