@@ -1,29 +1,18 @@
-from pyspark.sql import SparkSession
-import logging
-from datetime import datetime
+from pyspark import StorageLevel
 
-logging.basicConfig(
-    filename="log.txt",
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+def safe_cache(df, name="DataFrame"):
+    print(f"Attempting to cache {name} in memory...")
+    df.cache()
+    df.count()  # Trigger evaluation
 
-logging.info("Spark job started")
+    storage_info = spark._jsparkSession.sharedState().cacheManager().lookupCachedData(df._jdf)
 
-spark = SparkSession.builder \
-    .appName("tokenized_self_join") \
-    .enableHiveSupport() \
-    .getOrCreate()
+    if storage_info.isEmpty():
+        print(f"{name} NOT fully cached. Falling back to MEMORY_AND_DISK.")
+        df.unpersist()
+        df.persist(StorageLevel.MEMORY_AND_DISK)
+        df.count()  # Trigger persist
+    else:
+        print(f"{name} successfully cached in memory.")
 
-logging.info("Spark session created")
-
-# Load and process data...
-# df = spark.sql(...)
-# df_tokenized = ...
-
-logging.info("Tokenization complete")
-logging.info("Join process starting")
-
-# After join...
-logging.info("Join completed successfully")
+    return df
