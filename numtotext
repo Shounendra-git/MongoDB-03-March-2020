@@ -1,30 +1,15 @@
-from pyspark.sql.functions import col
+from concurrent.futures import ThreadPoolExecutor
 
-# ── 1.  Define two column groups ────────────────────────────────
-input_cols  = [c for c in joined.columns if c.startswith("input_")]
-other_cols  = [c for c in joined.columns if c not in input_cols]
+input_cols =  [c for c in joined.columns if c.startswith("input_")]
+other_cols =  [c for c in joined.columns if c not in input_cols]
 
-# ── 2.  Your two‑list function ─────────────────────────────────
-def process_input_row(input_values, other_values):
-    """
-    Runs on each executor.
-    `input_values`  -> list of values from input_* columns
-    `other_values`  -> list of values from all remaining columns
-    """
-    # Example placeholder:
-    # model.predict(input_values, context=other_values)
-    print(f"In: {input_values} | Other: {other_values}")
-
-# ── 3.  Stream every row to the function in parallel ───────────
-def _row_to_two_lists(row):
-    # Build the two lists in the exact order of the column arrays
+def wrapper(row):
     input_vals  = [row[c] for c in input_cols]
     other_vals  = [row[c] for c in other_cols]
     process_input_row(input_vals, other_vals)
 
-(
-    joined
-      .select(*input_cols, *other_cols)   # keep only what you need
-      .rdd
-      .foreach(_row_to_two_lists)
-)
+# toLocalIterator() brings rows partition‑by‑partition, so memory stays flat
+row_iter = joined.select(*input_cols, *other_cols).toLocalIterator()
+
+with ThreadPoolExecutor(max_workers=8) as pool:   # pick a thread count for your workload
+    pool.map(wrapper, row_iter)
