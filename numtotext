@@ -1,18 +1,30 @@
-from pyspark import StorageLevel
+from pyspark.sql.functions import col
 
-def safe_cache(df, name="DataFrame"):
-    print(f"Attempting to cache {name} in memory...")
-    df.cache()
-    df.count()  # Trigger evaluation
+# ── 1.  Define two column groups ────────────────────────────────
+input_cols  = [c for c in joined.columns if c.startswith("input_")]
+other_cols  = [c for c in joined.columns if c not in input_cols]
 
-    storage_info = spark._jsparkSession.sharedState().cacheManager().lookupCachedData(df._jdf)
+# ── 2.  Your two‑list function ─────────────────────────────────
+def process_input_row(input_values, other_values):
+    """
+    Runs on each executor.
+    `input_values`  -> list of values from input_* columns
+    `other_values`  -> list of values from all remaining columns
+    """
+    # Example placeholder:
+    # model.predict(input_values, context=other_values)
+    print(f"In: {input_values} | Other: {other_values}")
 
-    if storage_info.isEmpty():
-        print(f"{name} NOT fully cached. Falling back to MEMORY_AND_DISK.")
-        df.unpersist()
-        df.persist(StorageLevel.MEMORY_AND_DISK)
-        df.count()  # Trigger persist
-    else:
-        print(f"{name} successfully cached in memory.")
+# ── 3.  Stream every row to the function in parallel ───────────
+def _row_to_two_lists(row):
+    # Build the two lists in the exact order of the column arrays
+    input_vals  = [row[c] for c in input_cols]
+    other_vals  = [row[c] for c in other_cols]
+    process_input_row(input_vals, other_vals)
 
-    return df
+(
+    joined
+      .select(*input_cols, *other_cols)   # keep only what you need
+      .rdd
+      .foreach(_row_to_two_lists)
+)
