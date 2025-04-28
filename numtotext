@@ -1,15 +1,44 @@
-from concurrent.futures import ThreadPoolExecutor
+**Entity Resolution – Scalable Incremental Matching Pipeline**
+Build a Spark 2.4.8 pipeline on YARN that performs the following:
+1. **Data Sources**:
+   - `delta_30m`: 30 million new or updated customer entity records (daily incremental).
+   - `master_450m`: 450 million historical customer entity records.
+2. **Tokenisation & Blocking**:
+   - Tokenise each record by extracting:
+     - First two tokens (words) from the lowercased and cleaned `name` field.
+     - First token from the cleaned `postal_code`.
+   - Explode these tokens to create blocking keys.
+   - Repartition the exploded datasets on `token`.
+3. **Joining**:
+   - Perform an **inner join** between `delta_30m` and `master_450m` based on shared tokens.
+   - **Broadcast** the smaller side (`delta_30m`) if post-tokenisation size is manageable (< 2 GB).
+   - Cache the joined candidate pairs dataset.
+4. **Threaded Feature Engineering**:
+   - Collect all distinct `input_entity_id` from `delta_30m`.
+   - Launch a **ThreadPoolExecutor** on the driver with **maximum 8 worker threads**.
+   - Each thread should:
+     - Filter the cached joined DataFrame for a single `input_entity_id`.
+     - Calculate fuzzy matching features (e.g., `token_sort_ratio` using fuzzywuzzy or RapidFuzz).
+     - Call an ML model to predict match scores for candidate pairs.
+5. **Result Storage**:
+   - Convert all scored candidate pairs into a Spark DataFrame.
+   - Write into a **Hive table** (`my_db.tmps_entity_resolution_score`) in **Parquet** format.
+   - Table must be **partitioned by ****`entity_id`** and optionally by `partition_buckets`.
+   - Guarantee that each output file created is **≤ 4.5 GB**:
+     - Set `spark.sql.files.maxPartitionBytes = 4500m`.
+     - Repartition based on `entity_id` before writing.
+6. **Performance and Configuration**:
+   - Set `spark.sql.shuffle.partitions = 500` (or tuned to cluster size).
+   - Enable `spark.sql.sources.partitionOverwriteMode = dynamic`.
+   - Use `spark.sql.parquet.compression.codec = snappy`.
+   - Configure `spark.scheduler.mode = FAIR` to ensure fair scheduling between threads and shuffle jobs.
+   - Use `.persist(StorageLevel.MEMORY_AND_DISK)` on key intermediate DataFrames.
+   - Clean up `.unpersist()` cached tables post write.
+7. **Cluster Assumptions**:
+   - 12–20 worker nodes.
+   - 32 vCores per node, 128–192 GB RAM.
+   - HDFS with sufficient I/O bandwidth to handle shuffle loads (\~600 GB total shuffle volume).
+   - HDFS storage layout compatible with partitioned Hive writes.
+8. **Runtime SLA**:
+   - The entire pipeline must complete within **6 hours**, including tokenisation, blocking, fuzzy scoring, and Hive write.
 
-input_cols =  [c for c in joined.columns if c.startswith("input_")]
-other_cols =  [c for c in joined.columns if c not in input_cols]
-
-def wrapper(row):
-    input_vals  = [row[c] for c in input_cols]
-    other_vals  = [row[c] for c in other_cols]
-    process_input_row(input_vals, other_vals)
-
-# toLocalIterator() brings rows partition‑by‑partition, so memory stays flat
-row_iter = joined.select(*input_cols, *other_cols).toLocalIterator()
-
-with ThreadPoolExecutor(max_workers=8) as pool:   # pick a thread count for your workload
-    pool.map(wrapper, row_iter)
