@@ -1,37 +1,72 @@
--- Engine & execution settings
-set hive.execution.engine=tez;
-set hive.vectorized.execution.enabled=true;
-set hive.vectorized.execution.reduce.enabled=true;
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import broadcast, col, md5, lower, explode, split, lit
+import os
+import psutil
+import time
+import threading
 
--- Memory and container settings
-set hive.tez.container.size=8192;
-set hive.tez.java.opts=-Xmx6144m;
-set tez.runtime.io.sort.mb=1024;
-set hive.exec.reducers.bytes.per.reducer=67108864;
+# -------------------------------
+# Memory Logger Function
+# -------------------------------
+def log_memory_usage(spark, interval_sec=60, duration_min=10):
+    iterations = int((duration_min * 60) / interval_sec)
+    for i in range(iterations):
+        print(f"\n📌 Memory Check [{i+1}/{iterations}] at {time.strftime('%H:%M:%S')}")
 
--- Join and spill settings
-set hive.auto.convert.join=false;
-set hive.map.aggr=false;
-set hive.optimize.skewjoin=false;
+        # Driver memory
+        process = psutil.Process(os.getpid())
+        mem_bytes = process.memory_info().rss
+        print(f"Driver memory used: {mem_bytes / 1024 / 1024:.2f} MB")
 
--- Misc safety settings
-set hive.strict.checks.cartesian.product=false;
-set hive.exec.dynamic.partition.mode=nonstrict;
-set hive.exec.stagingdir=/tmp/hive-staging;
+        # Executor memory
+        try:
+            mem_status = spark.sparkContext.getExecutorMemoryStatus()
+            for executor, (max_mem, remaining) in mem_status.items():
+                print(f"Executor: {executor} | Max: {max_mem/1024**2:.2f} MB | Remaining: {remaining/1024**2:.2f} MB")
+        except Exception as e:
+            print(f"Error reading executor memory: {e}")
 
--- Optional: limit parallelism
-set tez.am.resource.memory.mb=2048;
-set tez.task.resource.memory.mb=4096;
+        time.sleep(interval_sec)
 
--- Sanity check first - small batch
-create table dpdm_curated_epdn.tmps_entities_resolution_match_debug as
-select 
-    entity_id as match_entity_id,
-    mod(row_number() over (order by entity_id), 180) as match_partition_bucket,
-    name as match_name,
-    address as match_address,
-    state as match_state,
-    country as match_country,
-    postal_code as match_postal_code
-from dpdm_curated_epdn.tmp_entities
-limit 10000;
+# -------------------------------
+# Main Spark Job
+# -------------------------------
+def main():
+    spark = SparkSession.builder \
+        .appName("EntityResolution-MemoryMonitor") \
+        .enableHiveSupport() \
+        .getOrCreate()
+
+    # Start memory logging in background
+    memory_thread = threading.Thread(target=log_memory_usage, args=(spark, 30, 10))
+    memory_thread.daemon = True
+    memory_thread.start()
+
+    # Simulate loading and transforming data
+    df1 = spark.sql("SELECT * FROM dptm_curated_epdh.tmps_er_exploded_input_data_buckets")
+    df2 = spark.sql("SELECT * FROM dptm_curated_epdh.tmps_er_exploded_match_data_buckets")
+
+    # Join on hashed exploded names (key_list)
+    joined = df1.join(df2, df1.input_key_list == df2.match_key_list, "inner") \
+        .select(
+            df1.input_entity_id,
+            df2.match_entity_id,
+            lit("23.9").alias("score"),
+            df2.match_partition_buckets.alias("match_partition_bucket")
+        )
+
+    # Write out using optimized partitions
+    joined.repartition(200, "match_partition_bucket") \
+        .write \
+        .mode("append") \
+        .partitionBy("match_partition_bucket") \
+        .parquet("/datalake/dptm/curated/epdh/TMPS_ENTITY_RESOLUTION_SCORE")
+
+    # Wait for memory thread to finish
+    memory_thread.join()
+
+    spark.stop()
+
+# -------------------------------
+if __name__ == "__main__":
+    main()
